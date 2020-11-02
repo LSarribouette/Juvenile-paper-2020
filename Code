@@ -1,0 +1,371 @@
+
+####################################################################################################################
+# 
+# Testing models of survivorship among juvenile corals
+# 2nd November 2020
+# Stuart Sandin & Lauranne Sarribouette
+#
+#   - Using identifications of juveniles from imagery
+#   - Data from Lauranne Sarribouette and Nicole Pedersen
+# 
+####################################################################################################################
+
+
+
+
+#--- Data and set up
+#-------------------------------------------------------------------------------------------------------------------
+
+require(stats4)
+
+juvs = read.csv("Data.csv", sep = ";", header=TRUE)
+
+
+# for comparison all corals (ADL) and all corals (AD)
+#juvs = juvs[juvs$X2017 != "Lost",]
+
+
+
+n = dim(juvs)[1]
+
+t_surv = array(NA,c(n))
+
+col_start = 4   # Column that is the starting year
+max_surv = dim(juvs)[2] - col_start - 1    # The number '1' is for the metadata rows following the survival data in 'juvs'
+
+for(i in 1:n) {
+  
+  # The following adds how many time steps the individual survives
+  #   - Assuming here that once an individual is no longer 'Alive', it can never be 'Alive' again
+  #   - An example, if the individual is not around in the second year, t=0 meaning that it did not survive any time steps
+
+  t=0
+  while(juvs[i,col_start+1+t]=="Alive") {
+    t=t+1
+    
+    # Accounting for the maximum number of survival steps in the data
+    if(t==max_surv) break
+  }
+  
+  t_surv[i]=t
+}
+
+possible_surv = seq(0,max(t_surv))
+
+
+
+#--- Creating arrays that will be used within the functions 
+prob_surv = array(NA,c(length(possible_surv)),dimnames=list(c(possible_surv)))
+s_log = array(NA,c(length(possible_surv)))
+
+
+
+
+
+
+#--- Functions to calculate likelihoods
+#-------------------------------------------------------------------------------------------------------------------
+
+
+#--- Function to calculate likelihood for constant survival (one-parameter model)
+nll <- function(s) {
+  
+  if(s>0.9999 || s<0.0001) return(99999999)
+  else {
+    surv = rep(s,4)
+    
+    prob_surv[1] = 1 - surv[1] 
+    prob_surv[2] = surv[1]*(1-surv[2]) 
+    prob_surv[3] = surv[1]*surv[2]*(1-surv[3]) 
+    prob_surv[4] = surv[1]*surv[2]*surv[3]*(1-surv[4]) 
+    prob_surv[5] = 1 - sum(prob_surv[1:4]) 
+    
+    likelihood = 0
+    
+    for(i in 0:max(t_surv)) {
+      
+      # This will calculate the probability of survival for the number of time steps indicated, pulling values from 'prob_surv' look-up table
+      #   - Note that the "+1" accounts for the distinction between the column identification (1:max_col) vs the number of steps survived (0:max_surv)
+      temp_prob = log(prob_surv[i+1])
+      
+      likelihood = likelihood + (n_t_surv[i+1]*temp_prob)
+    }
+    return(-likelihood)
+  }
+}
+
+
+#--- Function to calculate likelihood for logistic survival (two-parameter model)
+nll2 <- function(s0,b) {
+  
+  # Creating the logistic survivorship values
+  for(k in 1:length(possible_surv)){
+    s_log[k] = s0 / (1 + exp(-b*k))      
+  }
+  
+  if(max(s_log)>0.9999 || min(s_log)<0.0001) return(99999999)
+  else {
+    
+    prob_surv[1] = 1 - s_log[1]
+    prob_surv[2] = s_log[1]*(1-s_log[2])
+    prob_surv[3] = s_log[1]*s_log[2]*(1-s_log[3])
+    prob_surv[4] = s_log[1]*s_log[2]*s_log[3]*(1-s_log[4])
+    prob_surv[5] = 1 - sum(prob_surv[1:4])
+    
+    likelihood = 0
+    
+    for(i in 0:max(t_surv)) {
+      
+      # This will calculate the probability of survival for the number of time steps indicated, pulling values from 'prob_surv' look-up table
+      #   - Note that the "+1" accounts for the distinction between the column identification (1:max_col) vs the number of steps survived (0:max_surv)
+      temp_prob = log(prob_surv[i+1]) # Log to convert the product to sum and since log is a strictly increasing function, it would not impact the resulting value of the parameter
+      
+      likelihood = likelihood + (n_t_surv[i+1]*temp_prob) 
+    }
+    return(-likelihood) # Return the negative to maximize rather than minimimize
+  }
+}
+
+
+
+
+
+
+#--- Likelihood calculations 
+#-------------------------------------------------------------------------------------------------------------------
+
+# Calculating the likelihoods, given input of 'n_t_surv'
+#   - 'n_t_surv' is the vector of the number of individuals having survived for each of 't' time steps
+#   - 'n_t_surv' can be summed for different groupings, allowing one to compare models for different groups
+
+
+
+#--- One habitat
+
+# Use this summary table of counts for statistics involving all corals
+n_t_surv = array(NA,c(length(possible_surv)),dimnames = list(possible_surv))
+
+for(q in 1:length(possible_surv)) {
+  n_t_surv[q] = length(t_surv[which(t_surv==(q-1))])
+}
+
+sum(n_t_surv)
+
+# MODEL 1: constant    (1 parameter)
+
+fit.mle <- mle(nll, start=list(s=0.5), method="Nelder-Mead")
+summary(fit.mle)
+
+model1 <- logLik(fit.mle)
+
+
+
+# MODEL 2: logistic    (2 parameters)
+
+fit.mle.log <- mle(nll2, start=list(s0=0.5,b=1.0), method="Nelder-Mead")
+summary(fit.mle.log)
+
+model2 <- logLik(fit.mle.log)
+
+
+
+
+#--- Two habitats: Consolidated, Unconsolidated
+#   - Four possibilities : Consolidated (constant & logistic), Unconsolidated (constant & logistic)
+
+
+# Use this summary table of counts for statistics involving only one habitat type
+
+habitat = levels(juvs$Habitat_type)
+n_habitat = length(habitat)
+count_by_habitat = table(juvs$Habitat_type) # Nber of juv by genus
+
+
+# Consolidated
+for(q in 1:length(possible_surv)) {
+  n_t_surv[q] = length(t_surv[which(juvs$Habitat_type=="Consolidated" & t_surv==(q-1) )])
+}
+
+sum(n_t_surv)
+
+fit.mle.cons <- mle(nll, start=list(s=0.5), method="Nelder-Mead")
+summary(fit.mle.cons)
+
+logLik(fit.mle.cons)
+
+fit.mle.cons.log <- mle(nll2, start=list(s0=0.5,b=1.0), method="Nelder-Mead")
+summary(fit.mle.cons.log)
+
+logLik(fit.mle.cons.log)
+
+# Unconsolidated
+for(q in 1:length(possible_surv)) {
+  n_t_surv[q] = length(t_surv[which(juvs$Habitat_type=="Unconsolidated" & t_surv==(q-1) )])
+}
+
+sum(n_t_surv)
+
+
+fit.mle.unc <- mle(nll, start=list(s=0.5), method="Nelder-Mead")
+summary(fit.mle.unc)
+
+logLik(fit.mle.unc)
+
+fit.mle.unc.log <- mle(nll2, start=list(s0=0.5,b=1.0), method="Nelder-Mead")
+summary(fit.mle.unc.log)
+
+logLik(fit.mle.unc.log)
+
+
+
+# MODEL 3: Unc + Cons    (1+1= 2 parameters)
+
+model3 <- logLik(fit.mle.unc) + logLik(fit.mle.cons)
+
+# MODEL 4: Unc + Cons.log    (1+2= 3 parameters)
+
+model4 <- logLik(fit.mle.unc) + logLik(fit.mle.cons.log)
+
+# MODEL 5: Unc.log + Cons    (2+1= 3 parameters)
+
+model5 <- logLik(fit.mle.unc.log) + logLik(fit.mle.cons)
+
+# MODEL 6: Unc.log + Cons.log    (2+2= 4 parameters)
+
+model6 <- logLik(fit.mle.unc.log) + logLik(fit.mle.cons.log)
+
+
+
+
+
+
+
+
+#--- Repeat for individual taxa
+
+#   - by decreasing abundance: Pocillopora, Stylophora, Pavona, Goniastrea, Hydnophora, Astrea, Porites, 
+#                               Acropora, Favites
+
+
+# Use this summary table of counts for statistics involving only individual genera
+
+genera = levels(juvs$Genus)
+n_genera = length(genera)
+count_by_genus = table(juvs$Genus) 
+
+temp_genus = "Goniastrea"
+
+for(q in 1:length(possible_surv)) {
+ n_t_surv[q] = length(t_surv[which(juvs$Genus==temp_genus & t_surv==(q-1) )])
+}
+
+sum(n_t_surv)
+
+
+# MODEL 1: constant    (1 parameter)
+
+fit.mle <- mle(nll, start=list(s=0.5), method="Nelder-Mead")
+summary(fit.mle)
+
+model1 <- logLik(fit.mle)
+
+
+
+# MODEL 2: logistic    (2 parameters)
+
+fit.mle.log <- mle(nll2, start=list(s0=0.5,b=1.0), method="Nelder-Mead")
+summary(fit.mle.log)
+
+model2 <- logLik(fit.mle.log)
+
+
+
+
+#--- Two habitats: Consolidated, Unconsolidated
+#   - Four possibilities : Consolidated (constant & logistic), Unconsolidated (constant & logistic)
+
+
+# Use this summary table of counts for statistics involving only one habitat type
+
+habitat = levels(juvs$Habitat_type)
+n_habitat = length(habitat)
+count_by_habitat = table(juvs$Habitat_type) # Nber of juv by genus
+
+
+# Consolidated
+for(q in 1:length(possible_surv)) {
+  n_t_surv[q] = length(t_surv[which(juvs$Genus==temp_genus & juvs$Habitat_type=="Consolidated" & t_surv==(q-1) )])
+}
+
+sum(n_t_surv)
+
+fit.mle.cons <- mle(nll, start=list(s=0.5), method="Nelder-Mead")
+summary(fit.mle.cons)
+
+logLik(fit.mle.cons)
+
+fit.mle.cons.log <- mle(nll2, start=list(s0=0.5,b=1.0), method="Nelder-Mead")
+summary(fit.mle.cons.log)
+
+logLik(fit.mle.cons.log)
+
+# Unconsolidated
+for(q in 1:length(possible_surv)) {
+  n_t_surv[q] = length(t_surv[which(juvs$Genus==temp_genus & juvs$Habitat_type=="Unconsolidated" & t_surv==(q-1) )])
+}
+
+sum(n_t_surv)
+
+
+fit.mle.unc <- mle(nll, start=list(s=0.5), method="Nelder-Mead")
+summary(fit.mle.unc)
+
+logLik(fit.mle.unc)
+
+fit.mle.unc.log <- mle(nll2, start=list(s0=0.5,b=1.0), method="Nelder-Mead")
+summary(fit.mle.unc.log)
+
+logLik(fit.mle.unc.log)
+
+
+
+# MODEL 3: Unc + Cons    (1+1= 2 parameters)
+
+model3 <- logLik(fit.mle.unc) + logLik(fit.mle.cons)
+
+# MODEL 4: Unc + Cons.log    (1+2= 3 parameters)
+
+model4 <- logLik(fit.mle.unc) + logLik(fit.mle.cons.log)
+
+# MODEL 5: Unc.log + Cons    (2+1= 3 parameters)
+
+model5 <- logLik(fit.mle.unc.log) + logLik(fit.mle.cons)
+
+# MODEL 6: Unc.log + Cons.log    (2+2= 4 parameters)
+
+model6 <- logLik(fit.mle.unc.log) + logLik(fit.mle.cons.log)
+
+
+
+
+
+
+
+
+
+#--- Performing the Likelihood Ratio Test
+#-------------------------------------------------------------------------------------------------------------------
+
+#   - The difference (times 2) between the likelihood values for two nested models is approximated by a Chi squared distribution
+#       (minus 2 times the difference of log-likelihood values of the two models)
+#   - The null Chi squared is the distribution with the number of degrees of freedom equal to the number of parameters different between the models
+
+#   - Comparing 2 models: one habitat constant model and one habitat logistic model
+
+
+
+# Repeat for all juvenile corals and for individual taxa
+
+teststat12<- -2*(as.numeric(model1)-as.numeric(logLik(model2))) # df=2-1=1
+chi12 <- pchisq(teststat12,df=1,lower.tail=FALSE)
+
